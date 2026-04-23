@@ -1,0 +1,4 @@
+install.packages("rsconnect")
+# install.packages("devtools")
+devtools::install_github("rstudio/rsconnect")
+connectCloudUser(launch.browser = TRUE)
