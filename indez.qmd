@@ -1,0 +1,214 @@
+---
+title: "An analysis of student internet access and test scores"
+author: "Bailey Pollack"
+format:
+  html: 
+    theme: quartz 
+    code-fold: false
+    smooth-scroll: true
+    page-layout: article
+    date: today
+---
+
+## 1. Introduction
+
+This dataset comes from [Kagle](https://www.kaggle.com/datasets/mubashirsidiki/student-academic-performance-500-students?resource=download). It contains information from 500 high school students, their demographics, and academic performance.Each row in the data set represents one student that the researchers surveyed in their survey.
+
+The specific question I am investigating is:
+
+ **Does internet access correlate significantly with exam score?**
+
+More specifically, I compare students with internet access at home to students without internet access, using final exam scores as the outcome. There is 254 student with internet access and 246 without. This is a very even split which makes for an appropriate sampling size of each group.
+
+The goal of this analysis is to determine whether any observed difference between these two groups is large enough that it is unlikely to have occurred by chance.
+
+## 2. Exploratory Comparison
+
+Before running a formal hypothesis test, it is helpful to first compare the two groups visually with a boxplot. Here, I plot the final exam scores by group. This allows for a side by side comparison where you can clearly see the means, quartiles, and outliers of the data.
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(infer)
+library(readr)
+
+students <- read_csv("student_performance.csv", show_col_types = FALSE)
+
+students_clean <- students %>%
+  mutate(
+    internet_access = as.factor(internet_access),
+    final_score = as.numeric(final_score)
+  ) %>%
+  filter(!is.na(internet_access), !is.na(final_score))
+```
+
+```{r, echo=FALSE}
+students_clean %>%
+  ggplot(aes(x = internet_access, y = final_score)) +
+  geom_boxplot(fill = "#ff3388") +
+  labs(
+    title = "Final Exam Scores by Internet Access",
+    x = "Internet Access at Home",
+    y = "Final Exam Score",
+    caption = "Source: Kaggle Student Academic Performance Dataset"
+  )
+
+```
+
+```{r, echo=FALSE}
+students_clean %>%
+  group_by(internet_access) %>%
+  summarize(mean_score = round(mean(final_score), 2)) %>%
+  knitr::kable(
+    col.names = c("Internet Access", "Average Final Score"),
+  )
+```
+This initial visualization is interesting because the average score does not appear to differ significantly between each group. There is substantial overlap and the mean scores only differ by less than two points. There are no major outliers, and the score distributions are very similar between the two groups.
+
+## 3. Bootstrap Confidence Intervals
+
+To better understand the difference between the two groups, I made bootstrap confidence intervals for the mean final exam score in each group. This allows me to estimate a range of where the true mean lies between in each group.
+
+```{r, echo=FALSE}
+yes_boot <- students_clean %>%
+  filter(internet_access == "Yes") %>%
+  specify(response = final_score) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "mean")
+
+no_boot <- students_clean %>%
+  filter(internet_access == "No") %>%
+  specify(response = final_score) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "mean")
+
+yes_ci <- quantile(yes_boot$stat, c(0.025, 0.975))
+no_ci <- quantile(no_boot$stat, c(0.025, 0.975))
+
+ci_summary <- tibble::tibble(
+  group = c("Internet Access", "No Internet Access"),
+  observed_stat = c(
+    mean(students_clean %>% filter(internet_access == "Yes") %>% pull(final_score)),
+    mean(students_clean %>% filter(internet_access == "No") %>% pull(final_score))
+  ),
+  lower = c(yes_ci[1], no_ci[1]),
+  upper = c(yes_ci[2], no_ci[2])
+)
+```
+
+```{r, echo=FALSE}
+ggplot(ci_summary, aes(x = group, y = observed_stat)) +
+  geom_col(fill = "#ff3388") +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.2,
+    linewidth = 0.8
+  ) +
+  labs(
+    title = "Mean Final Exam Scores with 95% Confidence Intervals",
+    x = "Group",
+    y = "Mean Final Exam Score",
+    caption = "Source: Kaggle Student Academic Performance Dataset"
+  ) +
+  theme_linedraw()
+```
+From this plot, we can see that the average final exam scores for the two groups are very close, and the confidence intervals have significant overlap.
+
+The table below summarizes the mean final exam score for each group along with the upper and lower bounds of the 95% bootstrap confidence intervals.
+
+```{r, echo=FALSE}
+ci_summary %>%
+  knitr::kable(
+    col.names = c("Group", "Mean Score", "Lower Bound", "Upper Bound"),
+    digits = 2
+  )
+```
+
+From these confidence intervals, we can see that the two intervals overlap significantly. This is an indicator that the two groups do not differ significantly, however, this does not replace the formal hypothesis test which is the next step in this analysis.
+
+## 4. Hypotheses
+
+To formally test whether there is a difference in final exam scores between the two groups, we first need to define the null and alternative hypotheses.
+
+group 1 is *students with internet access at home* and group 2 is *students without internet access.*
+
+The null hypothesis is that there is no difference in the average final exam score between the two groups. In other words, any observed difference is completely random.
+
+$$
+H_0: \mu_1 - \mu_2 = 0
+$$
+
+The alternative hypothesis is that the average final exam scores differ significantly between the two groups. Implying that there is a correlation between internet access and test scores.
+
+$$
+H_a: \mu_1 - \mu_2 \neq 0
+$$
+
+The alternative hypothesis is two-sided because I am interested in whether there is any difference in average scores at all, regardless of which group has higher test scores.
+
+## 5. Null Distribution and P-value
+
+After setting up the hypotheses, we can now formally test whether the observed difference in average final exam scores could reasonably be explained just by chance. 
+
+```{r, echo=FALSE}
+set.seed(250)
+
+obs_diff <- students_clean %>%
+  specify(response = final_score, explanatory = internet_access) %>%
+  calculate(stat = "diff in means", order = c("Yes", "No"))
+
+null_dist <- students_clean %>%
+  specify(response = final_score, explanatory = internet_access) %>%
+  hypothesize(null = "independence") %>%
+  generate(reps = 1000, type = "permute") %>%
+  calculate(stat = "diff in means", order = c("Yes", "No"))
+
+p_val <- null_dist %>%
+  get_p_value(obs_stat = obs_diff, direction = "two-sided")
+```
+
+Using Yes − No, the observed difference in mean final exam scores is **`r round(obs_diff, 2)`** points. This means that, on average, students with internet access scored about *`r abs(round(obs_diff, 2))` points `r ifelse(obs_diff > 0, "higher", "lower")`* than students without internet access.
+
+The permutation test gives a p-value of **`r round(p_val$p_value, 4)`**. This p-value means there is about a **28.4% chance** of seeing a difference like this just by random chance if internet access and exam scores are unrelated.
+
+## 6. Visualizing the P-value
+
+This is a visualization of the null distribution. This distribution shows the differences in mean final exam scores that we would expect to see if internet access and exam performance were unrelated.
+
+```{r, echo=FALSE}
+null_dist %>%
+  visualize() +
+  shade_p_value(obs_stat = obs_diff, direction = "two-sided") +
+  labs(
+    title = "Null Distribution for the Difference in Mean Final Exam Scores",
+    x = "Difference in Means (Yes - No)",
+    y = "Count of Simulated Results",
+    caption = "Source: Kaggle Student Academic Performance Dataset"
+  )
+```
+
+As we can see, the null distribution is centered around 0, which means that if there was no relationship between internet access and final exam scores, the difference between the groups should be zero or close to zero. The observed difference of the means, shown by the red line in the plot, falls within the bulk of the distribution rather than in the extremes. Many of the simulated differences between the means are as large as or larger than the observed difference. This means the observed result is not unusual under random chance, which is why the p-value is relatively large.
+
+## 7. Decision
+
+To make a decision, I chose a significance level of α = 0.05. This is a common value in statistical analysis and means that I am risking a 5% chance of incorrectly concluding that there is a difference when there is not.
+
+The p-value from the permutation test is `r round(p_val$p_value, 3)`, which is greater than 0.05. Because the p-value is larger than the significance level, ***We fail to reject the null hypothesis.***
+
+This means, that based on this data set, there is not strong enough evidence that students with internet access have different average final exam scores than students without internet access. The difference observed in the data could reasonably be due to chance.
+
+Failing to reject the null hypothesis does not, however, prove that the two groups are exactly the same. Rather, it means that the data does not provide strong enough evidence to conclude that a significant difference exists.
+
+## 8. Practical Significance
+
+The observed difference in mean final exam scores between the two groups is **`r round(obs_diff, 2)`** points. In a 0–100 exam scale, a difference of about `r abs(round(obs_diff, 2))` points is relatively small.
+
+Even if this difference were statistically significant, a gap of only a few points is unlikely to represent a substantial change in academic performance or outcomes for most students.
+
+In addition, internet access may be related to other factors, which we did not test for, that also may influence exam scores; such as socioeconomic status, parental education, study habits, or school resources. Because these factors are not controlled for here, the two groups may differ in ways beyond just internet access.
+
+Overall, while there is a small difference in average scores, it does not appear to be large enough to be practically important, and it may be explained by other underlying factors.
+
+## 9. Conclusion
+
+Overall, this analysis suggests that there is not strong evidence of a meaningful difference in final exam scores between students with and without internet access. While students with internet access scored slightly higher on average, the bootstrap confidence intervals overlapped and the p-value of `r round(p_val$p_value, 3)` led to failing to reject the null hypothesis. This indicates that the observed difference could reasonably occur by chance. Additionally, other factors such as socioeconomic status or study habits may influence exam performance, making this comparison even less reliable, as these factors were not controlled or taken into consideration.
